@@ -100,6 +100,10 @@ export function Warikan() {
     );
   }
 
+  function setLevel(id: string, level: Level) {
+    setMembers((ms) => ms.map((m) => (m.id === id && !m.guest && m.level !== level ? { ...m, level } : m)));
+  }
+
   function addMember() {
     if (members.length >= MAX_MEMBERS) return;
     const id = `new-${nextId}`;
@@ -207,7 +211,7 @@ export function Warikan() {
           </div>
 
           <h2 className="sr">坂</h2>
-          <SlopeChart result={result} selectedId={selected.id} onSelect={setSelectedId} organizerId={organizerId} />
+          <SlopeChart result={result} selectedId={selected.id} onSelect={setSelectedId} onSetLevel={setLevel} organizerId={organizerId} />
           <MemberEditor
             member={selected}
             canRemove={members.length > 1}
