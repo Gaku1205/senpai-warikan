@@ -15,7 +15,7 @@ describe("buildLineMessage", () => {
     expect(text).toContain("【山本さん送別会】お会計のお知らせ");
     expect(text).toContain("合計 10,000円（3人）");
     expect(text).toContain("山本さん　0円（今日の主役）");
-    expect(text).toContain("11月28日（金）までに、渡辺へお願いします。");
+    expect(text).toContain("11月28日（金）までに、渡辺さんへお願いします。");
     expect(text.split("\n")[3]).toMatch(/^佐藤さん　[\d,]+円$/);
   });
 
@@ -26,7 +26,29 @@ describe("buildLineMessage", () => {
     const r2 = computeSplit({ total: 10300, members: members.slice(0, 2), slope: "flat", unit: 1000, organizerId: "b", remainderTo: "organizer" });
     const t2 = buildLineMessage({ eventName: "", total: 10300, deadline: "", organizerName: "渡辺" }, r2);
     expect(t2).toContain("【飲み会】");
-    expect(t2).toMatch(/端数の[\d,]+円は、渡辺さんが(多め|少なめ)に持っています。/);
+    expect(t2).toContain("※ 端数（300円）は、渡辺さんの分で調整しています");
+  });
+
+  it("端数の行：丸めの単位と、何円をだれの分で調整したかが、多め・少なめどちらでも同じ形で読める", () => {
+    const base = { eventName: "", deadline: "", organizerName: "渡辺", unit: 100 };
+    const two = members.slice(0, 2);
+    for (const total of [10050, 9950]) {
+      const r = computeSplit({ total, members: two, slope: "flat", unit: 100, organizerId: "b", remainderTo: "organizer" });
+      const text = buildLineMessage({ ...base, total }, r);
+      expect(text).toContain("※ 100円単位にそろえた端数（50円）は、渡辺さんの分で調整しています");
+      expect(text).toMatch(/渡辺さん　[\d,]+円（端数調整）/);
+      expect(text).not.toMatch(/佐藤さん　[\d,]+円（端数調整）/);
+    }
+  });
+
+  it("文面の中の名前は全部「〇〇さん」。幹事も同じ", () => {
+    const r = computeSplit({ total: 10050, members: members.slice(0, 2), slope: "flat", unit: 100, organizerId: "b", remainderTo: "organizer" });
+    const text = buildLineMessage({ eventName: "", total: 10050, deadline: "", organizerName: "渡辺", unit: 100 }, r);
+    expect(text).not.toMatch(/渡辺(?!さん)/);
+    expect(text).not.toMatch(/佐藤(?!さん)/);
+    expect(text).toContain("渡辺さんへお願いします。");
+    const none = buildLineMessage({ eventName: "", total: 10000, deadline: "", organizerName: "" }, r);
+    expect(none).toContain("幹事さんへお願いします。");
   });
 
   it("全員の文面は、集金の印があっても変わらない", () => {
@@ -47,7 +69,7 @@ describe("buildLineMessage", () => {
     expect(lines[3]).toBe("渡辺さん　5,000円");
     expect(lines).not.toContain("佐藤さん　5,000円");
     expect(lines.join("\n")).not.toContain("今日の主役");
-    expect(lines[5]).toBe("11月28日（金）までに、渡辺へお願いします。");
+    expect(lines[5]).toBe("11月28日（金）までに、渡辺さんへお願いします。");
   });
 
   it("まだの人が複数のとき、人数と合計は金額の合計", () => {

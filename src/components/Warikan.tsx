@@ -78,7 +78,7 @@ export function Warikan() {
 
   const organizer = members.find((m) => m.id === organizerId);
   const message = buildLineMessage(
-    { eventName, total, deadline, organizerName: organizer?.name ?? "" },
+    { eventName, total, deadline, organizerName: organizer?.name ?? "", unit },
     result,
     target,
   );
