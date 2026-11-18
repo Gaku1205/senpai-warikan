@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ALL_PAID_MESSAGE, type MessageTarget } from "@/lib/message";
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -20,7 +21,15 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function LineMessage({ text }: { text: string }) {
+export function LineMessage({
+  text,
+  target,
+  onTarget,
+}: {
+  text: string;
+  target: MessageTarget;
+  onTarget: (t: MessageTarget) => void;
+}) {
   const [copied, setCopied] = useState(false);
   // スマホの下の「コピー」の帯は、文面の欄に着くまでだけ出す（着いたら欄の中のボタンを使う）
   const [reached, setReached] = useState(false);
@@ -65,6 +74,20 @@ export function LineMessage({ text }: { text: string }) {
         <div className="msg-side">
           <h2 id="msg-h" className="msg-h">LINEに貼る文面</h2>
           <p className="msg-note">坂の上から順に1人1行。坂を動かすと、ここも変わります。</p>
+          <div className="seg msg-seg" role="radiogroup" aria-label="文面を送る相手">
+            {(["all", "unpaid"] as MessageTarget[]).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={target === k}
+                className={`seg-opt${target === k ? " is-on" : ""}`}
+                onClick={() => onTarget(k)}
+              >
+                {k === "all" ? "全員" : "まだの人だけ"}
+              </button>
+            ))}
+          </div>
           <div className="msg-actions">
             <button type="button" className="btn-gold" onClick={onCopy} aria-live="polite">
               {copied ? "コピーしました" : "文面をコピー"}
@@ -75,6 +98,12 @@ export function LineMessage({ text }: { text: string }) {
           </div>
         </div>
         <div className="msg-text" aria-label="文面">
+          {text === ALL_PAID_MESSAGE ? (
+            <p className="msg-head">
+              <span className="msg-title">{text}</span>
+            </p>
+          ) : (
+            <>
           <p className="msg-head">
             {head.split("\n").map((l, i) => (
               <span key={i} className={i === 0 ? "msg-title" : "msg-sub"}>
@@ -100,6 +129,8 @@ export function LineMessage({ text }: { text: string }) {
               <span key={i}>{l}</span>
             ))}
           </p>
+            </>
+          )}
         </div>
       </div>
       <div className={`dock${reached ? " is-away" : ""}`}>

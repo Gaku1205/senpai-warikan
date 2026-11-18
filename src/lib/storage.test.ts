@@ -7,8 +7,8 @@ const sample: SavedWarikan = {
   eventName: "新歓",
   total: 30000,
   members: [
-    { id: "m1", name: "佐藤", level: 5, guest: false },
-    { id: "new-2", name: "", level: 1, guest: true },
+    { id: "m1", name: "佐藤", level: 5, guest: false, paid: false },
+    { id: "new-2", name: "", level: 1, guest: true, paid: false },
   ],
   slope: "steep",
   unit: 500,
@@ -76,7 +76,7 @@ describe("storage", () => {
     expect(parseSaved({ ...sample, remainderTo: "nobody" })).toBeNull();
     expect(parseSaved({ ...sample, total: -1 })).toBeNull();
     expect(parseSaved({ ...sample, members: [] })).toBeNull();
-    const many = Array.from({ length: 21 }, (_, i) => ({ id: `m${i}`, name: "", level: 3, guest: false }));
+    const many = Array.from({ length: 21 }, (_, i) => ({ id: `m${i}`, name: "", level: 3, guest: false, paid: false }));
     expect(parseSaved({ ...sample, members: many, organizerId: "m0", selectedId: "m0" })).toBeNull();
     expect(parseSaved({ ...sample, organizerId: "zzz" })).toBeNull();
     expect(parseSaved({ ...sample, selectedId: "zzz" })).toBeNull();

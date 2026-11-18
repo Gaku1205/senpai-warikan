@@ -3,9 +3,9 @@ import { buildLineMessage } from "./message";
 import { computeSplit, type Member } from "./split";
 
 const members: Member[] = [
-  { id: "a", name: "佐藤", level: 5, guest: false },
-  { id: "b", name: "渡辺", level: 3, guest: false },
-  { id: "c", name: "山本", level: 3, guest: true },
+  { id: "a", name: "佐藤", level: 5, guest: false, paid: false },
+  { id: "b", name: "渡辺", level: 3, guest: false, paid: false },
+  { id: "c", name: "山本", level: 3, guest: true, paid: false },
 ];
 
 describe("buildLineMessage", () => {
@@ -27,5 +27,45 @@ describe("buildLineMessage", () => {
     const t2 = buildLineMessage({ eventName: "", total: 10300, deadline: "", organizerName: "渡辺" }, r2);
     expect(t2).toContain("【飲み会】");
     expect(t2).toMatch(/端数の[\d,]+円は、渡辺さんが(多め|少なめ)に持っています。/);
+  });
+
+  it("全員の文面は、集金の印があっても変わらない", () => {
+    const base = { eventName: "送別会", total: 10000, deadline: "11月28日（金）", organizerName: "渡辺" };
+    const split = (ms: Member[]) => computeSplit({ total: 10000, members: ms, slope: "normal", unit: 100, organizerId: "b", remainderTo: "organizer" });
+    const marked = members.map((m) => (m.id === "a" ? { ...m, paid: true } : m));
+    expect(buildLineMessage(base, split(marked), "all")).toBe(buildLineMessage(base, split(members)));
+    expect(buildLineMessage(base, split(members), "all")).toBe(buildLineMessage(base, split(members)));
+  });
+
+  it("まだの人だけの文面：主役と集金済みを除き、合計が金額の合計と一致する", () => {
+    const base = { eventName: "山本さん送別会", total: 10000, deadline: "11月28日（金）", organizerName: "渡辺" };
+    const ms = members.map((m) => (m.id === "a" ? { ...m, paid: true } : m));
+    const r = computeSplit({ total: 10000, members: ms, slope: "flat", unit: 100, organizerId: "b", remainderTo: "organizer" });
+    const lines = buildLineMessage(base, r, "unpaid").split("\n");
+    expect(lines[0]).toBe("【山本さん送別会】集金のお願い");
+    expect(lines[1]).toBe("まだの方 1人・合計 5,000円");
+    expect(lines[3]).toBe("渡辺さん　5,000円");
+    expect(lines).not.toContain("佐藤さん　5,000円");
+    expect(lines.join("\n")).not.toContain("今日の主役");
+    expect(lines[5]).toBe("11月28日（金）までに、渡辺へお願いします。");
+  });
+
+  it("まだの人が複数のとき、人数と合計は金額の合計", () => {
+    const r = computeSplit({ total: 10000, members, slope: "normal", unit: 100, organizerId: "b", remainderTo: "organizer" });
+    const text = buildLineMessage({ eventName: "", total: 10000, deadline: "", organizerName: "" }, r, "unpaid");
+    expect(text.split("\n")[1]).toBe("まだの方 2人・合計 10,000円");
+  });
+
+  it("端数を持つ人が集金済みなら、まだの人だけの文面に端数の行は出ない", () => {
+    const ms = members.slice(0, 2).map((m) => (m.id === "b" ? { ...m, paid: true } : m));
+    const r = computeSplit({ total: 10300, members: ms, slope: "flat", unit: 1000, organizerId: "b", remainderTo: "organizer" });
+    const text = buildLineMessage({ eventName: "", total: 10300, deadline: "", organizerName: "渡辺" }, r, "unpaid");
+    expect(text).not.toContain("端数");
+  });
+
+  it("まだの人が0人なら1行だけ", () => {
+    const ms = members.map((m) => ({ ...m, paid: true }));
+    const r = computeSplit({ total: 10000, members: ms, slope: "normal", unit: 100, organizerId: "b", remainderTo: "organizer" });
+    expect(buildLineMessage({ eventName: "", total: 10000, deadline: "", organizerName: "" }, r, "unpaid")).toBe("全員の集金が済みました。");
   });
 });

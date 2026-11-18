@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { computeSplit, type Member, sortBySlope, weightOf } from "./split";
 
 const team: Member[] = [
-  { id: "a", name: "伊藤", level: 3, guest: false },
-  { id: "b", name: "佐藤", level: 5, guest: false },
-  { id: "c", name: "高橋", level: 4, guest: false },
-  { id: "d", name: "鈴木", level: 4, guest: false },
-  { id: "e", name: "渡辺", level: 3, guest: false },
-  { id: "f", name: "中村", level: 2, guest: false },
-  { id: "g", name: "小林", level: 1, guest: false },
-  { id: "h", name: "山本", level: 3, guest: true },
+  { id: "a", name: "伊藤", level: 3, guest: false, paid: false },
+  { id: "b", name: "佐藤", level: 5, guest: false, paid: false },
+  { id: "c", name: "高橋", level: 4, guest: false, paid: false },
+  { id: "d", name: "鈴木", level: 4, guest: false, paid: false },
+  { id: "e", name: "渡辺", level: 3, guest: false, paid: false },
+  { id: "f", name: "中村", level: 2, guest: false, paid: false },
+  { id: "g", name: "小林", level: 1, guest: false, paid: false },
+  { id: "h", name: "山本", level: 3, guest: true, paid: false },
 ];
 
 describe("weightOf", () => {
