@@ -2,6 +2,7 @@ import { LEVEL_NAMES, type Member } from "@/lib/split";
 
 export function MemberEditor({
   member,
+  placeholder,
   canRemove,
   canAdd,
   onChange,
@@ -10,6 +11,8 @@ export function MemberEditor({
   onAdd,
 }: {
   member: Member;
+  /** 名前が空のときに灰色で見せる仮の名前（先輩1 など） */
+  placeholder: string;
   canRemove: boolean;
   canAdd: boolean;
   onChange: (patch: Partial<Member>) => void;
@@ -24,7 +27,7 @@ export function MemberEditor({
         <input
           className="editor-input"
           value={member.name}
-          placeholder="名前"
+          placeholder={placeholder}
           maxLength={10}
           onChange={(e) => onChange({ name: e.target.value })}
         />

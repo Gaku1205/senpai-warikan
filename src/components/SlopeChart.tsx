@@ -20,12 +20,15 @@ function signed(d: number): string {
 
 export function SlopeChart({
   result,
+  names,
   selectedId,
   onSelect,
   onSetLevel,
   organizerId,
 }: {
   result: SplitResult;
+  /** 柱の名前（名前が空の人は仮の名前） */
+  names: Record<string, string>;
   selectedId: string;
   onSelect: (id: string) => void;
   onSetLevel: (id: string, level: Level) => void;
@@ -93,7 +96,8 @@ export function SlopeChart({
           const hm = max > 0 ? r.amount / max : 0;
           const em = showEven && max > 0 ? result.even / max : hm;
           const isSel = r.member.id === selectedId;
-          const name = r.member.name.trim() || "名前なし";
+          const name = names[r.member.id] ?? "名前なし";
+          const isPlaceholder = r.member.name.trim() === "";
           const d = Math.round(r.diffFromEven);
           const short = !r.member.guest && showEven && d < 0;
           return (
@@ -119,7 +123,7 @@ export function SlopeChart({
                 }}
               >
                 <span className="step-who">
-                  <span className="step-name">{name}</span>
+                  <span className={`step-name${isPlaceholder ? " is-ph" : ""}`}>{name}</span>
                   <span className="step-level">
                     {r.member.guest ? "主役" : LEVEL_NAMES[r.member.level]}
                     {r.member.id === organizerId && "・幹事"}
