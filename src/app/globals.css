@@ -410,6 +410,15 @@ select {
 .step-btn:hover .step-bar {
   filter: brightness(1.06);
 }
+/* つかんで動かす：主役以外の柱。縦の動きは柱が受け、横のスクロールは通す */
+.step:not(.is-guest) .step-btn {
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.step.is-grab .step-btn {
+  cursor: grabbing;
+}
 
 /* 選んだ人の編集 */
 .editor {
@@ -912,6 +921,9 @@ select {
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .step:not(.is-guest) .step-btn {
+    touch-action: pan-y;
   }
   .step-btn {
     flex-direction: row;

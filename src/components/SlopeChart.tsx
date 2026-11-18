@@ -1,4 +1,10 @@
-import { LEVEL_NAMES, type SplitResult, yen } from "@/lib/split";
+"use client";
+
+import { useRef, useState } from "react";
+import { DRAG_THRESHOLD, levelFromDrag, stepSize } from "@/lib/drag";
+import { LEVEL_NAMES, type Level, type SplitResult, yen } from "@/lib/split";
+
+type Grab = { id: string; pointerId: number; x: number; y: number; level: Level; horizontal: boolean; step: number; moved: boolean };
 
 /** 目盛りの上限：いちばん高い柱を少し超える、きりのよい数 */
 function scaleMax(max: number): number {
@@ -16,13 +22,50 @@ export function SlopeChart({
   result,
   selectedId,
   onSelect,
+  onSetLevel,
   organizerId,
 }: {
   result: SplitResult;
   selectedId: string;
   onSelect: (id: string) => void;
+  onSetLevel: (id: string, level: Level) => void;
   organizerId: string;
 }) {
+  const grab = useRef<Grab | null>(null);
+  const suppressClick = useRef(false);
+  const [grabbingId, setGrabbingId] = useState<string | null>(null);
+
+  function onPointerDown(e: React.PointerEvent<HTMLButtonElement>, id: string, level: Level, guest: boolean) {
+    if (guest || (e.pointerType === "mouse" && e.button !== 0)) return;
+    const horizontal = window.matchMedia("(max-width: 720px)").matches;
+    const track = e.currentTarget.querySelector(".step-track");
+    const len = track ? (horizontal ? track.clientWidth : track.clientHeight) : 0;
+    grab.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, level, horizontal, step: stepSize(len), moved: false };
+    suppressClick.current = false;
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLButtonElement>) {
+    const g = grab.current;
+    if (!g || g.pointerId !== e.pointerId) return;
+    // 段が上がる向き：PC は上、スマホは右
+    const dist = g.horizontal ? e.clientX - g.x : g.y - e.clientY;
+    if (!g.moved) {
+      if (Math.abs(dist) < DRAG_THRESHOLD) return;
+      g.moved = true;
+      suppressClick.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      onSelect(g.id);
+      setGrabbingId(g.id);
+    }
+    onSetLevel(g.id, levelFromDrag(g.level, dist, g.step));
+  }
+
+  function endGrab(e: React.PointerEvent<HTMLButtonElement>) {
+    if (grab.current?.pointerId !== e.pointerId) return;
+    grab.current = null;
+    setGrabbingId(null);
+  }
+
   const max = Math.max(0, ...result.rows.map((r) => r.amount), result.even);
   const top = scaleMax(max);
   const showEven = result.even > 0 && result.payers > 1;
@@ -56,14 +99,24 @@ export function SlopeChart({
           return (
             <li
               key={r.member.id}
-              className={`step${r.member.guest ? " is-guest" : ""}${!r.member.guest && r.amount === 0 ? " is-zero" : ""}${isSel ? " is-sel" : ""}`}
+              className={`step${r.member.guest ? " is-guest" : ""}${!r.member.guest && r.amount === 0 ? " is-zero" : ""}${isSel ? " is-sel" : ""}${grabbingId === r.member.id ? " is-grab" : ""}`}
             >
               <button
                 type="button"
                 className="step-btn"
                 aria-pressed={isSel}
                 aria-label={`${name}さん、${r.member.guest ? "主役" : LEVEL_NAMES[r.member.level]}、${yen(r.amount)}円${showEven && !r.member.guest ? `、均等より${signed(d)}円` : ""}。選んで編集`}
-                onClick={() => onSelect(r.member.id)}
+                onPointerDown={(e) => onPointerDown(e, r.member.id, r.member.level, r.member.guest)}
+                onPointerMove={onPointerMove}
+                onPointerUp={endGrab}
+                onPointerCancel={endGrab}
+                onClick={() => {
+                  if (suppressClick.current) {
+                    suppressClick.current = false;
+                    return;
+                  }
+                  onSelect(r.member.id);
+                }}
               >
                 <span className="step-who">
                   <span className="step-name">{name}</span>
