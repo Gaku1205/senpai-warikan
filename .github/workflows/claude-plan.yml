@@ -1,0 +1,361 @@
+# 企画AI：Issueに「ai:plan」ラベルを付けると、短いメモを実装AIが作業できるIssueに清書する。
+# 清書できたら ai:implement を付けて実装に回す（全自動）。結果が大きく変わる迷いがあれば、選択式で質問して待つ（ai:question。答えると answer.yml が清書に戻す）。
+# 進行中の作業とぶつかるかも企画AIが判断し、ぶつかるなら順番待ち（ai:queue）、別の場所なら並列で始める。
+name: Claude Plan
+
+on:
+  issues:
+    types: [labeled]
+
+# 並列の上限（agent-desk の設定が Actions の Variable に書く。pipeline-lib.sh の parallel_limit_decide が読む）。
+# 渡していなかったので、設定で昼の数を変えても、いつも既定の3で動いていた（2026-11-18）
+env:
+  PARALLEL_DAY: ${{ vars.PARALLEL_DAY }}
+  PARALLEL_NIGHT: ${{ vars.PARALLEL_NIGHT }}
+  PARALLEL_NIGHT_HOURS: ${{ vars.PARALLEL_NIGHT_HOURS }}
+  PARALLEL_TZ: ${{ vars.PARALLEL_TZ }}
+  PARALLEL_OVERRIDE: ${{ vars.PARALLEL_OVERRIDE }}
+  MAX_PARALLEL: ${{ vars.MAX_PARALLEL }}
+
+jobs:
+  # 「新サービス：」のIssueに ai:plan が付いたら、外して、工場が受け持つことを書く（テンプレート自身の企画・実装に回さない）
+  factory-issue:
+    if: >-
+      github.event.label.name == 'ai:plan' &&
+      github.event.repository.is_template &&
+      (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:') || contains(github.event.issue.labels.*.name, 'factory'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels/ai%3Aplan" > /dev/null 2>&1 || true
+          gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -f body="このIssueは工場が受け持つので（新しいリポジトリを作って、そこで企画・実装する）、ai:plan を外しました。テンプレート自身には作りません。" > /dev/null
+  plan:
+    # テンプレート本体の「新サービス：」のIssueは工場（factory.yml）が受け持つ。ラベルが付いても、テンプレート自身には作らない
+    # ai:skip が付いた Issue（まだ動かさない物・オーナー以外が作って受付が止めた物）では、ラベルが付け直されても始めない
+    # 作者がオーナーかボット（パイプラインの App・github-actions）の Issue だけ。受付が落ちて ai:skip が付かなかった他人の Issue も企画しない（#151）
+    if: >-
+      github.event.label.name == 'ai:plan' &&
+      github.event.issue.state == 'open' &&
+      (github.event.issue.user.login == github.repository_owner || github.event.issue.user.type == 'Bot') &&
+      !contains(github.event.issue.labels.*.name, 'ai:skip') &&
+      !(github.event.repository.is_template && (startsWith(github.event.issue.title, '新サービス：') || startsWith(github.event.issue.title, '新サービス:') || contains(github.event.issue.labels.*.name, 'factory')))
+    runs-on: ubuntu-latest
+    outputs:
+      # 上限を増やしてやり直したときは、やり直しの結果
+      outcome: ${{ steps.claude_more.outcome != 'skipped' && steps.claude_more.outcome || steps.claude.outcome }}
+      raised: ${{ steps.turns.outputs.more }}
+    # いつもは数分。上限を増やしたやり直し（下）が入っても収まる長さ（見張り役の「企画が止まった」の30分より短くする）
+    timeout-minutes: 25
+    concurrency:
+      group: claude-plan-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      # パイプラインの App（ボット）がラベル・コメントで起こした実行を、AIのアクションが断らないようにする。
+      # AI自身（claude[bot]）は許さない（自分のコメントで自分を呼ぶ繰り返しを防ぐ）。Secret は使わない
+      - name: 起こしたボットを許可に入れる
+        id: bots
+        env:
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+        run: |
+          list=""
+          if [ "$SENDER_TYPE" = Bot ] && [ "$SENDER" != "claude[bot]" ]; then
+            list="${SENDER},${SENDER%\[bot\]}"
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+      # 進捗ログ：AIが動く前（作業フォルダはまだ main のまま）に「進行中」を残す。終わりは after-plan が残す
+      - name: 進捗ログ（企画・開始）
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: bash .github/scripts/step-log.sh --issue "$ISSUE" --step plan --model sonnet --result running
+      # Issue の本文に貼られた画像（スクショなど）を、AIが動く前に取ってくる（AIはネットに出ずに Read で見られる。
+      # このリポジトリの画像は Contents API で取るので、非公開でも見られる。鍵は github.com・api.github.com にだけ送る）
+      - name: Issue の画像を取る
+        id: images
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.issue.body }}
+        run: bash .github/scripts/issue-images-prompt.sh issue-images plan
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          allowed_bots: ${{ steps.bots.outputs.list }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはこのリポジトリ（${{ github.repository }}）の企画担当です。
+            Issue #${{ github.event.issue.number }} は、オーナーがスマホで書いた短いメモです。これを、実装AIがそのまま作業できるIssueに清書してください。
+            ${{ steps.images.outputs.prompt }}
+
+            手順：
+            1. `gh issue view ${{ github.event.issue.number }} --comments` でメモとコメントを読む
+            2. CLAUDE.md と、あれば docs/ 以下の仕様書を読み、関係するコードを確認する
+            3. タイトルと本文を書き直す。本文は、作業フォルダ直下のファイル `plan-body.md` に Write で書き（`/tmp` など、ほかの場所には書かない）、`gh issue edit ${{ github.event.issue.number }} --title "..." --body-file plan-body.md` で更新する。
+               あとから本文を直すとき（分けた Issue の番号を入れる、など）は、`plan-body.md` を Edit で直して、同じコマンドでもう一度更新する
+            4. `gh issue list --state open --label ai:implement` と `gh pr list --state open` で、いま進行中の作業を見る。
+               それぞれのIssue・PRの中身（`gh issue view` / `gh pr diff`）と見比べて、このIssueと同時に作業してよいかを決める
+               - 同じファイルを書き換えそう、同じ機能や画面の同じ場所を触る、前の作業の結果を使う → 待つ（WAIT）
+               - 触る場所がはっきり別で、どちらが先にマージされても困らない → 並列（PARALLEL）
+               - 迷ったら待つ
+            5. 最後に、作業フォルダ直下のファイル `plan-result.txt` に2行だけを書く（`BLOCKED` のときだけ、2行目から下が待ち先）
+               1行目は次のどれか
+               - `READY size:S`：文言や見た目の小さい修正
+               - `READY`：普通の大きさ
+               - `READY size:L`：設計が絡む大きい作業
+               - `QUESTION`：**人間にしかできない作業が必須のときだけ**（依存パッケージの追加、`.github/`・`docs/`・CLAUDE.md の変更、秘密情報の登録、外部サービスの契約や設定）。ただし、CLAUDE.md が「触ってよい」と書いている場所（例：ai-dev-template 自身の `.github/scripts/` と `docs/pipeline.md`）の変更は、人間の作業ではない。そのときは `READY` にする。このときは本文を書き直さず、`gh issue comment` で、人間に何をしてほしいかを書く。コメントの1行目は `<!-- human-request -->` だけにし（ダッシュボードがこの印で見つけて「あなたの番」に出す）、2行目に、してほしいことを1文で書く（例：「`zod` を依存に足してください。入力の検証に使います」）。詳しい説明はその下に書く
+               - `BLOCKED`：**ほかの Issue・PR が終わらないと、清書も実装も始められないとき**（その作業の結果や決まりを使う。別のリポジトリの作業でもよい。例：ai-dev-template で形式が決まってから、このリポジトリに配られるのを待つ）。人間に頼まない（`QUESTION` にしない）。このときは本文を書き直さず、`plan-result.txt` の2行目から下に、待ち先を1行に1つ書く（`owner/repo#番号`。このリポジトリなら `#番号` でもよい。Issue でも PR でもよい。配布を待つなら、配布の PR）。あわせて `gh issue comment` で、何を待っているかを1〜2文で書く（書き出しは「待っている理由：」）。待ち先が全部閉じる（マージされる）と、仕組みが自動でもう一度あなたを呼ぶ。待ち先がもう閉じているなら、`BLOCKED` にせず、その結果を読んで清書する。いま進行中の作業と同じ場所を触るだけ（結果を使うわけではない）なら、`BLOCKED` ではなく `READY` と `WAIT`（下）
+               - `ASK`：**結果が大きく変わる迷いがあるとき**（見た目の方向・画面の構成・挙動・お金・データの扱い・どこまでやるか）。オーナーは、勝手に決められるより聞かれたいと言っている。迷ったら聞く。
+                 このときは本文を書き直さず、`gh issue comment` で質問を書く。コメントの1行目は `<!-- ai-question -->` だけにする（ダッシュボードと、答えを受け取る仕組みがこの印で見つける）。
+                 2行目から、質問を1〜5個、選択式で書く（1つの質問に選択肢2〜4個。いちばん良いと思う物に「（おすすめ）」。選択肢は短く具体的に）：
+                 ```
+                 **Q1. 〇〇はどうする？**
+                 - A. 〇〇（おすすめ）
+                 - B. 〇〇
+
+                 答え方：`Q1はA、Q2はB` のように（選択肢に無い答えもOK）
+                 ```
+                 オーナーがコメントで答えると、自動でもう一度あなたに回ってくる。そのときは答えを使って清書し、同じ事を聞き直さない（前の `<!-- ai-question -->` のあとのオーナーのコメントが答え）
+               - `MOCKS`：**見た目の大きい作り直し・新しい画面を作る作業**で、オーナーがまだ画面案を選んでいないとき（コメントに `<!-- ai-mocks: … -->` の画面案が無い、または前の画面案に「両方ちがう」「出し直して」と言われた）。作る前に、別のAIがざっくり画面を2案作ってオーナーに選んでもらう。このときは本文を書き直さず、コメントも書かない（画面案のコメントは別の仕組みが書く）
+                 - 画面案にオーナーが答えていれば（`<!-- ai-mocks: issue-N/rR -->` のコメントのあとのオーナーのコメント）、選んだ方（A なら `mock-a`、B なら `mock-b`）を「目標の画面」として清書し `READY` にする。本文の最後に、1行で `<!-- ai-mock: issue-N/rR/mock-a -->` を書き（実装の前に、仕組みがこの画面を実装AIに渡す）、「### 目標の画面」の節に、選んだ案の名前とオーナーの注文（「A の配置で B の色」など）を書く
+               - 小さい迷い（文言・余白・並び順など、あとで直しやすい物）は聞かない。いちばん無難な解釈で `READY` にして、本文に「### 仮定」を書く（下）
+               2行目は（`BLOCKED` 以外）`PARALLEL` か `WAIT`（進行中の作業が無ければ `PARALLEL`）。WAIT のときは、どの作業とぶつかるかを Issue に `gh issue comment` で1行書く。書き出しは「順番待ちの理由：」にし、「前の作業が終わると自動で始まります」で終える（実装AIへの指示にならないようにする）
+
+            本文の形（日本語）：
+            ### 背景
+            （なぜやるか。オーナーのメモの意図）
+            ### やること
+            （箇条書き。触るファイルや関数の見当があれば書く）
+            ### 読む所
+            （実装AIが最初に読む場所。`docs/spec.md`・`docs/design.md` は長いので、実装AIは全部は読まず、ここに書かれた節だけを読む。ファイルごとに1行で、この作業に関係する節の見出しを、見出しの文字のまま書く。例：`- docs/spec.md：「進捗図」「CI失敗時の分岐」`。見た目に触る作業なら、`docs/design.md` の全体に効く決まりの節（方向・色・文字・避けること、にあたる節）も入れる。関係するコードのファイルも1行で書く。例：`- コード：src/lib/flow.ts、src/components/FlowMap.tsx`。あなたはもう全部読んでいるので、迷ったら多めに書く。行番号は書かない（ほかの作業で変わる）。仕様書が無い・短い（200行より短い）リポジトリでは、この見出しごと書かない）
+            （本文のいちばん最後に、実装で書き換えそうなファイルを1行の印で書く：`<!-- ai-touches: src/lib/a.ts, src/components/B.tsx, docs/spec.md -->`。カンマ区切り。新しく作るファイルも入れる。触るファイルを1つずつ書く。フォルダ（/ で終わる）で書いてよいのは、新しく作るフォルダ（中身が全部この作業の物）だけ。`src/components/`・`src/lib/`・`src/app/`・`tests/`・`docs/` のような、ほかの作業も使う大きなフォルダは書かない。仕組みが、順番待ちの物を進行中の作業と重ならないときだけ並べて始めるのに使う。仕様書が短いリポジトリでも書く。印が無いと順番待ちで待たされるので、READY を返す前に、本文の最後に印があるか必ず確かめる。本文で触れるファイルは `src/lib/a.ts` のようにバッククォートで囲んで書く）
+            ### 受け入れ条件
+            - [ ] （確かめられる条件を箇条書き）
+            - [ ] 確認コマンド（pipeline.json の checks。無ければ型チェック・リント・テスト・ビルド）が全部通る
+            ### やらないこと
+            （紛らわしい周辺の作業）
+            ### 仮定
+            （メモから読み取れなくて、あなたが決めた内容を箇条書き。無ければこの見出しごと書かない。違うときはオーナーがコメントで直す）
+            > 元のメモ：（オーナーのメモをそのまま）
+
+            守ること：
+            - メモの意図を変えない。メモに無い機能を足さない。1つのPRで終わる大きさにする
+            - 1つのPRに収まらない大きさなら、いちばん最初に作る分（それだけで動く最小のまとまり）だけをこのIssueにして `READY`。残りは、新しいIssueとして `gh issue create --title "..." --body-file plan-new-issue.md` で作る（本文は上の形で、作業フォルダ直下の `plan-new-issue.md` に Write で書く。ラベルは付けない。自動で企画に回る）。このIssueの「やらないこと」に、新しいIssueの番号を書く（番号が要るので、新しいIssueを先に作ってから、このIssueの本文を書くと、直しが要らない）
+            - 仕様書と食い違うときは、背景に「docs/○○ の△△と違う」と書く
+            - 見た目や挙動を新しく決める・変える作業なら、「やること」の最初に「`docs/spec.md`・`docs/design.md` に○○を書く（そのあと実装する）」を入れる。既存のルールの延長で決められる小さい見た目は「仮定」に書く。画面の方向が変わる・新しい画面を作るなど、見た目の大きい決めがあるときは `ASK` で聞く
+            - コードは変更しない。Issueの更新とコメントだけをする
+            - コマンドは1つずつ、許された形のまま動かす（`gh issue view 番号` のように。`; && |`・改行・`cd`・`-q` の長い式を付けると拒否されて手数だけ減る）。ファイルを読むのは Read、探すのは Grep・Glob
+            - ファイルを書くのは Write、直すのは Edit（使ってよいコマンドは上の `gh` だけ。`sed`・`rm`・`cat`・`echo`・`mv` などは拒否される）。書いてよいのは、作業フォルダ直下の `plan-body.md`・`plan-new-issue.md`・`plan-comment.md`・`plan-result.txt` だけ。書いたファイルは消さない（片付けは要らない。終わると作業フォルダごと消える）。長いコメントは `plan-comment.md` に書いて `gh issue comment 番号 --body-file plan-comment.md`
+          claude_args: '--model sonnet --max-turns 30 --allowedTools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*),Bash(gh pr diff:*),Read,Glob,Grep,Write,Edit"'
+      # 企画AIが、作業回数の上限（--max-turns 30）に届いて、結果（plan-result.txt）を書く前に終わったか。
+      # コードの多いリポジトリでは、読むだけで上限に届くことがある。同じ上限でやり直しても同じ所で止まるので、
+      # そのときだけ、この場で1回だけ、上限を増やして（50回）やり直す（いつもの上限は増やさない。使う量を増やしすぎないため）。
+      # 作業フォルダのスクリプトは使わない（AIが動いたあとなので）。実行記録をデータとして読むだけ
+      - name: 作業回数の上限に届いたか
+        id: turns
+        if: ${{ !cancelled() }}
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          more=false
+          if [ ! -s plan-result.txt ] && [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
+            subtype=$(jq -r 'if type == "array" then . else [.] end | map(select(type == "object" and .type == "result")) | last // {} | .subtype // ""' "$EXECUTION_FILE" 2> /dev/null || true)
+            if [ "$subtype" = "error_max_turns" ]; then more=true; fi
+          fi
+          echo "作業回数の上限に届いて、結果が無い：$more"
+          echo "more=$more" >> "$GITHUB_OUTPUT"
+      # 上限を増やしたやり直し（1回だけ）。指示は上と同じで、最後に「2回目であること・読む量を絞ること」を足してある
+      - uses: anthropics/claude-code-action@v1
+        id: claude_more
+        if: ${{ !cancelled() && steps.turns.outputs.more == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          allowed_bots: ${{ steps.bots.outputs.list }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            あなたはこのリポジトリ（${{ github.repository }}）の企画担当です。
+            Issue #${{ github.event.issue.number }} は、オーナーがスマホで書いた短いメモです。これを、実装AIがそのまま作業できるIssueに清書してください。
+            ${{ steps.images.outputs.prompt }}
+
+            手順：
+            1. `gh issue view ${{ github.event.issue.number }} --comments` でメモとコメントを読む
+            2. CLAUDE.md と、あれば docs/ 以下の仕様書を読み、関係するコードを確認する
+            3. タイトルと本文を書き直す。本文は、作業フォルダ直下のファイル `plan-body.md` に Write で書き（`/tmp` など、ほかの場所には書かない）、`gh issue edit ${{ github.event.issue.number }} --title "..." --body-file plan-body.md` で更新する。
+               あとから本文を直すとき（分けた Issue の番号を入れる、など）は、`plan-body.md` を Edit で直して、同じコマンドでもう一度更新する
+            4. `gh issue list --state open --label ai:implement` と `gh pr list --state open` で、いま進行中の作業を見る。
+               それぞれのIssue・PRの中身（`gh issue view` / `gh pr diff`）と見比べて、このIssueと同時に作業してよいかを決める
+               - 同じファイルを書き換えそう、同じ機能や画面の同じ場所を触る、前の作業の結果を使う → 待つ（WAIT）
+               - 触る場所がはっきり別で、どちらが先にマージされても困らない → 並列（PARALLEL）
+               - 迷ったら待つ
+            5. 最後に、作業フォルダ直下のファイル `plan-result.txt` に2行だけを書く（`BLOCKED` のときだけ、2行目から下が待ち先）
+               1行目は次のどれか
+               - `READY size:S`：文言や見た目の小さい修正
+               - `READY`：普通の大きさ
+               - `READY size:L`：設計が絡む大きい作業
+               - `QUESTION`：**人間にしかできない作業が必須のときだけ**（依存パッケージの追加、`.github/`・`docs/`・CLAUDE.md の変更、秘密情報の登録、外部サービスの契約や設定）。ただし、CLAUDE.md が「触ってよい」と書いている場所（例：ai-dev-template 自身の `.github/scripts/` と `docs/pipeline.md`）の変更は、人間の作業ではない。そのときは `READY` にする。このときは本文を書き直さず、`gh issue comment` で、人間に何をしてほしいかを書く。コメントの1行目は `<!-- human-request -->` だけにし（ダッシュボードがこの印で見つけて「あなたの番」に出す）、2行目に、してほしいことを1文で書く（例：「`zod` を依存に足してください。入力の検証に使います」）。詳しい説明はその下に書く
+               - `BLOCKED`：**ほかの Issue・PR が終わらないと、清書も実装も始められないとき**（その作業の結果や決まりを使う。別のリポジトリの作業でもよい。例：ai-dev-template で形式が決まってから、このリポジトリに配られるのを待つ）。人間に頼まない（`QUESTION` にしない）。このときは本文を書き直さず、`plan-result.txt` の2行目から下に、待ち先を1行に1つ書く（`owner/repo#番号`。このリポジトリなら `#番号` でもよい。Issue でも PR でもよい。配布を待つなら、配布の PR）。あわせて `gh issue comment` で、何を待っているかを1〜2文で書く（書き出しは「待っている理由：」）。待ち先が全部閉じる（マージされる）と、仕組みが自動でもう一度あなたを呼ぶ。待ち先がもう閉じているなら、`BLOCKED` にせず、その結果を読んで清書する。いま進行中の作業と同じ場所を触るだけ（結果を使うわけではない）なら、`BLOCKED` ではなく `READY` と `WAIT`（下）
+               - `ASK`：**結果が大きく変わる迷いがあるとき**（見た目の方向・画面の構成・挙動・お金・データの扱い・どこまでやるか）。オーナーは、勝手に決められるより聞かれたいと言っている。迷ったら聞く。
+                 このときは本文を書き直さず、`gh issue comment` で質問を書く。コメントの1行目は `<!-- ai-question -->` だけにする（ダッシュボードと、答えを受け取る仕組みがこの印で見つける）。
+                 2行目から、質問を1〜5個、選択式で書く（1つの質問に選択肢2〜4個。いちばん良いと思う物に「（おすすめ）」。選択肢は短く具体的に）：
+                 ```
+                 **Q1. 〇〇はどうする？**
+                 - A. 〇〇（おすすめ）
+                 - B. 〇〇
+
+                 答え方：`Q1はA、Q2はB` のように（選択肢に無い答えもOK）
+                 ```
+                 オーナーがコメントで答えると、自動でもう一度あなたに回ってくる。そのときは答えを使って清書し、同じ事を聞き直さない（前の `<!-- ai-question -->` のあとのオーナーのコメントが答え）
+               - `MOCKS`：**見た目の大きい作り直し・新しい画面を作る作業**で、オーナーがまだ画面案を選んでいないとき（コメントに `<!-- ai-mocks: … -->` の画面案が無い、または前の画面案に「両方ちがう」「出し直して」と言われた）。作る前に、別のAIがざっくり画面を2案作ってオーナーに選んでもらう。このときは本文を書き直さず、コメントも書かない（画面案のコメントは別の仕組みが書く）
+                 - 画面案にオーナーが答えていれば（`<!-- ai-mocks: issue-N/rR -->` のコメントのあとのオーナーのコメント）、選んだ方（A なら `mock-a`、B なら `mock-b`）を「目標の画面」として清書し `READY` にする。本文の最後に、1行で `<!-- ai-mock: issue-N/rR/mock-a -->` を書き（実装の前に、仕組みがこの画面を実装AIに渡す）、「### 目標の画面」の節に、選んだ案の名前とオーナーの注文（「A の配置で B の色」など）を書く
+               - 小さい迷い（文言・余白・並び順など、あとで直しやすい物）は聞かない。いちばん無難な解釈で `READY` にして、本文に「### 仮定」を書く（下）
+               2行目は（`BLOCKED` 以外）`PARALLEL` か `WAIT`（進行中の作業が無ければ `PARALLEL`）。WAIT のときは、どの作業とぶつかるかを Issue に `gh issue comment` で1行書く。書き出しは「順番待ちの理由：」にし、「前の作業が終わると自動で始まります」で終える（実装AIへの指示にならないようにする）
+
+            本文の形（日本語）：
+            ### 背景
+            （なぜやるか。オーナーのメモの意図）
+            ### やること
+            （箇条書き。触るファイルや関数の見当があれば書く）
+            ### 読む所
+            （実装AIが最初に読む場所。`docs/spec.md`・`docs/design.md` は長いので、実装AIは全部は読まず、ここに書かれた節だけを読む。ファイルごとに1行で、この作業に関係する節の見出しを、見出しの文字のまま書く。例：`- docs/spec.md：「進捗図」「CI失敗時の分岐」`。見た目に触る作業なら、`docs/design.md` の全体に効く決まりの節（方向・色・文字・避けること、にあたる節）も入れる。関係するコードのファイルも1行で書く。例：`- コード：src/lib/flow.ts、src/components/FlowMap.tsx`。あなたはもう全部読んでいるので、迷ったら多めに書く。行番号は書かない（ほかの作業で変わる）。仕様書が無い・短い（200行より短い）リポジトリでは、この見出しごと書かない）
+            （本文のいちばん最後に、実装で書き換えそうなファイルを1行の印で書く：`<!-- ai-touches: src/lib/a.ts, src/components/B.tsx, docs/spec.md -->`。カンマ区切り。新しく作るファイルも入れる。触るファイルを1つずつ書く。フォルダ（/ で終わる）で書いてよいのは、新しく作るフォルダ（中身が全部この作業の物）だけ。`src/components/`・`src/lib/`・`src/app/`・`tests/`・`docs/` のような、ほかの作業も使う大きなフォルダは書かない。仕組みが、順番待ちの物を進行中の作業と重ならないときだけ並べて始めるのに使う。仕様書が短いリポジトリでも書く。印が無いと順番待ちで待たされるので、READY を返す前に、本文の最後に印があるか必ず確かめる。本文で触れるファイルは `src/lib/a.ts` のようにバッククォートで囲んで書く）
+            ### 受け入れ条件
+            - [ ] （確かめられる条件を箇条書き）
+            - [ ] 確認コマンド（pipeline.json の checks。無ければ型チェック・リント・テスト・ビルド）が全部通る
+            ### やらないこと
+            （紛らわしい周辺の作業）
+            ### 仮定
+            （メモから読み取れなくて、あなたが決めた内容を箇条書き。無ければこの見出しごと書かない。違うときはオーナーがコメントで直す）
+            > 元のメモ：（オーナーのメモをそのまま）
+
+            守ること：
+            - メモの意図を変えない。メモに無い機能を足さない。1つのPRで終わる大きさにする
+            - 1つのPRに収まらない大きさなら、いちばん最初に作る分（それだけで動く最小のまとまり）だけをこのIssueにして `READY`。残りは、新しいIssueとして `gh issue create --title "..." --body-file plan-new-issue.md` で作る（本文は上の形で、作業フォルダ直下の `plan-new-issue.md` に Write で書く。ラベルは付けない。自動で企画に回る）。このIssueの「やらないこと」に、新しいIssueの番号を書く（番号が要るので、新しいIssueを先に作ってから、このIssueの本文を書くと、直しが要らない）
+            - 仕様書と食い違うときは、背景に「docs/○○ の△△と違う」と書く
+            - 見た目や挙動を新しく決める・変える作業なら、「やること」の最初に「`docs/spec.md`・`docs/design.md` に○○を書く（そのあと実装する）」を入れる。既存のルールの延長で決められる小さい見た目は「仮定」に書く。画面の方向が変わる・新しい画面を作るなど、見た目の大きい決めがあるときは `ASK` で聞く
+            - コードは変更しない。Issueの更新とコメントだけをする
+            - コマンドは1つずつ、許された形のまま動かす（`gh issue view 番号` のように。`; && |`・改行・`cd`・`-q` の長い式を付けると拒否されて手数だけ減る）。ファイルを読むのは Read、探すのは Grep・Glob
+            - ファイルを書くのは Write、直すのは Edit（使ってよいコマンドは上の `gh` だけ。`sed`・`rm`・`cat`・`echo`・`mv` などは拒否される）。書いてよいのは、作業フォルダ直下の `plan-body.md`・`plan-new-issue.md`・`plan-comment.md`・`plan-result.txt` だけ。書いたファイルは消さない（片付けは要らない。終わると作業フォルダごと消える）。長いコメントは `plan-comment.md` に書いて `gh issue comment 番号 --body-file plan-comment.md`
+            - これは2回目です。前回は、作業回数の上限（30回）に届いて、`plan-result.txt` を書く前に終わりました。今回は50回まで使えますが、次はありません。読む量を絞ってください：仕様書（`docs/spec.md`・`docs/design.md`）は最初から全部は読まず、Grep で見出しを探して、関係する節だけを Read で読む。コードも、関係するファイルだけを読む。清書が書けたら、ほかを調べる前に `plan-result.txt` まで書き切る
+            - 前回の途中の結果が残っているかもしれません。Issue の本文がもう清書の形（「### 背景」「### やること」…）なら、最初から書き直さず、足りない所だけ直す。残りの作業の Issue をもう作っていないか、`gh issue list --state open` で確かめ、同じ物をもう一度作らない。質問や順番待ちの理由のコメントがもう書いてあれば、同じコメントをもう一度書かない
+          claude_args: '--model sonnet --max-turns 50 --allowedTools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*),Bash(gh pr diff:*),Read,Glob,Grep,Write,Edit"'
+      # AIの結果（実行記録・plan-result.txt）を、データとして次のジョブに渡す。ここでは Secret を使わない
+      - name: AIの結果を取っておく
+        if: ${{ !cancelled() }}
+        env:
+          EXECUTION_FILE: ${{ steps.claude_more.outputs.execution_file || steps.claude.outputs.execution_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai-result"
+          if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then cp "$EXECUTION_FILE" "$RUNNER_TEMP/ai-result/execution.json"; fi
+          if [ -f plan-result.txt ] && [ ! -L plan-result.txt ]; then cp plan-result.txt "$RUNNER_TEMP/ai-result/plan-result.txt"; fi
+          touch "$RUNNER_TEMP/ai-result/.keep"
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: ai-result
+          path: ${{ runner.temp }}/ai-result
+          include-hidden-files: true
+          retention-days: 3
+
+  after-plan:
+    # 安全のため別のジョブにする：AIが作業フォルダのスクリプトを書き換えても、ここでは main の版を動かす。
+    # PIPELINE_TOKEN を使うのはこのジョブだけ（AIのジョブには渡さない）
+    needs: plan
+    # AIのジョブが動いたときだけ（別のラベルが付いたときなど、AIのジョブが飛ばされたら何もしない）
+    # 取り消されたとき（ai:plan が付け直されて、新しい実行に置き換わった）も何もしない。新しい実行が結果を出す。
+    # ここで動くと、実行記録が無いので「企画AIがエラーで止まりました（原因：不明）」と書いて ai:retry を付け、
+    # 先へ進んだ Issue を30分後にもう一度企画し直してしまう。時間切れで取り消されたときは、見張り役が拾う（IDLE_PLAN_MIN）
+    if: ${{ !cancelled() && needs.plan.result != 'skipped' && needs.plan.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # 秘密鍵を PKCS#8 にそろえる（create-github-app-token は Node 24 だと「BEGIN RSA PRIVATE KEY」の形式を読めず Invalid keyData になる）
+      - name: パイプラインの鍵の秘密鍵をそろえる
+        id: app-key
+        if: vars.PIPELINE_APP_ID != ''
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.PIPELINE_APP_PRIVATE_KEY }}
+        run: |
+          # 貼るときに改行が消えて1行になっていても、頭と終わりの行と中身から組み立て直す
+          k=$(printf '%s' "$KEY" | tr -d '\r'); k=${k//\\n/$'\n'}
+          type=$(printf '%s' "$k" | grep -oE 'BEGIN [A-Z ]*PRIVATE KEY' | head -1 | sed 's/^BEGIN //')
+          # 頭と終わりの行が抜けていたら、GitHub App の鍵の形式（RSA）とみなす
+          [ -n "$type" ] || type="RSA PRIVATE KEY"
+          body=$(printf '%s' "$k" | sed -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----//' -e 's/-----END [A-Z ]*PRIVATE KEY-----//' | tr -d ' \n\t"')
+          pem=$(printf -- '-----BEGIN %s-----\n%s\n-----END %s-----\n' "$type" "$(printf '%s' "$body" | fold -w 64)" "$type" | openssl pkey 2> /dev/null) \
+            || { b=no; e=no; case "$k" in *"-----BEGIN"*) b=yes;; esac; case "$k" in *"-----END"*) e=yes;; esac
+                 echo "::error::PIPELINE_APP_PRIVATE_KEY を秘密鍵として読めません（.pem の中身を -----BEGIN から -----END まで全部貼る）。手がかり：全体 ${#KEY} 文字・$(printf '%s\n' "$KEY" | wc -l) 行・BEGIN の行 $b・END の行 $e・中身 ${#body} 文字（2048ビットの鍵なら中身は約1,600文字）"; exit 1; }
+          while IFS= read -r line; do [ -n "$line" ] && echo "::add-mask::$line"; done <<< "$pem"
+          { echo 'pem<<PEM_END'; echo "$pem"; echo 'PEM_END'; } >> "$GITHUB_OUTPUT"
+      # パイプラインの鍵：GitHub App があれば、その1時間だけの鍵を使う（回数制限がオーナーと別・期限切れなし）。無ければ PIPELINE_TOKEN
+      - name: パイプラインの鍵を作る
+        id: app-token
+        if: steps.app-key.outputs.pem != ''
+        # 鍵が作れなくても（秘密鍵の貼り間違いなど）止めずに PIPELINE_TOKEN で続ける。Doctor が ❌ で知らせる
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.PIPELINE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.pem }}
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: ai-result
+          path: ${{ runner.temp }}/ai-result
+      # 何が起きたかを、ログと Summary に残す（拒否された操作と、AIが最後に言ったこと）。ここは main の版のスクリプト
+      - name: AIの結果を残す
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          RESULT: ${{ needs.plan.outputs.outcome == 'success' && 'success' || 'failure' }}
+        run: |
+          bash .github/scripts/ai-report.sh --title "企画AI" "$RUNNER_TEMP/ai-result/execution.json" || true
+          bash .github/scripts/step-log.sh --issue "$ISSUE" --step plan --model sonnet --result "$RESULT"
+      - name: plan-result.txt を作業フォルダに置く（中身はデータとしてだけ読む）
+        run: if [ -f "$RUNNER_TEMP/ai-result/plan-result.txt" ]; then cp "$RUNNER_TEMP/ai-result/plan-result.txt" plan-result.txt; fi
+      - name: 次へ進める（実装を依頼する／質問で止まる）
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIPELINE_TOKEN }}
+          GITHUB_TOKEN_FOR_LABELS: ${{ github.token }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NOTIFY_EVENTS: ${{ vars.NOTIFY_EVENTS }}
+          AGENT_DESK_URL: ${{ vars.AGENT_DESK_URL }}
+          ISSUE: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          # 企画を始めた時点の本文（清書で消えた画像を足し直すのに使う）
+          ISSUE_BODY_BEFORE: ${{ github.event.issue.body }}
+          PLAN_OUTCOME: ${{ needs.plan.outputs.outcome }}
+          # true：作業回数の上限に届いたので、上限を増やしてもう1回動かした（それでも届いたら、やり直さず人間に回す）
+          PLAN_TURNS_RAISED: ${{ needs.plan.outputs.raised }}
+          EXECUTION_FILE: ${{ runner.temp }}/ai-result/execution.json
+        run: .github/scripts/after-plan.sh
