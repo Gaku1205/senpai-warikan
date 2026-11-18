@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { loadWarikan, nextNewId, sameMembers, saveWarikan } from "@/lib/storage";
 import { Mark } from "./Mark";
 import { SlopeChart } from "./SlopeChart";
 import { MemberEditor } from "./MemberEditor";
@@ -40,7 +41,35 @@ export function Warikan() {
   const [nextId, setNextId] = useState(1);
   const [editing, setEditing] = useState<Setting | null>(null);
 
+  const [loaded, setLoaded] = useState(false);
+
   const total = Number(totalText.replace(/[^\d]/g, "")) || 0;
+
+  // 最初の描画のあとに、残した中身を読み込む（hydration をずらさないため）
+  useEffect(() => {
+    const saved = loadWarikan();
+    if (saved) {
+      /* eslint-disable react-hooks/set-state-in-effect -- localStorage は最初の描画のあとでしか読めない（hydration を合わせるため） */
+      setEventName(saved.eventName);
+      setTotalText(saved.total ? String(saved.total) : "");
+      setMembers(saved.members);
+      setSlope(saved.slope);
+      setUnit(saved.unit);
+      setOrganizerId(saved.organizerId);
+      setRemainderTo(saved.remainderTo);
+      setDeadline(saved.deadline);
+      setSelectedId(saved.selectedId);
+      setNextId(nextNewId(saved.members));
+    }
+    setLoaded(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, []);
+
+  // 読み込みが終わったあと、入力が変わるたびに残す
+  useEffect(() => {
+    if (!loaded) return;
+    saveWarikan({ eventName, total, members, slope, unit, organizerId, remainderTo, deadline, selectedId });
+  }, [loaded, eventName, total, members, slope, unit, organizerId, remainderTo, deadline, selectedId]);
 
   const result = useMemo(
     () => computeSplit({ total, members, slope, unit, organizerId, remainderTo }),
@@ -99,7 +128,7 @@ export function Warikan() {
 
   const moved = result.rows.reduce((sum, r) => sum + (r.member.guest ? 0 : Math.max(0, Math.round(r.diffFromEven))), 0);
   // 最初に入っている会のままか（書き換えるまで「例」と出す）
-  const isExample = eventName === INITIAL_EVENT.eventName && total === INITIAL_EVENT.total && members === INITIAL_MEMBERS;
+  const isExample = eventName === INITIAL_EVENT.eventName && total === INITIAL_EVENT.total && sameMembers(members, INITIAL_MEMBERS);
 
   function toggle(k: Setting) {
     setEditing((cur) => (cur === k ? null : k));
