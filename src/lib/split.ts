@@ -38,6 +38,8 @@ export type Member = {
   level: Level;
   /** 主役（送られる人・迎えられる人）。0円 */
   guest: boolean;
+  /** 集金済み（端末には残さない） */
+  paid: boolean;
 };
 
 /** 端数を誰が持つか */

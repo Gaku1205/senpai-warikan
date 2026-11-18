@@ -43,6 +43,12 @@ export function MemberEditor({
         <input type="checkbox" checked={member.guest} onChange={(e) => onChange({ guest: e.target.checked })} />
         <span>主役（0円）</span>
       </label>
+      {!member.guest && (
+        <label className="editor-guest">
+          <input type="checkbox" checked={member.paid} onChange={(e) => onChange({ paid: e.target.checked })} />
+          <span>集金済み</span>
+        </label>
+      )}
       <div className="editor-actions">
         <button type="button" className="ed-text" onClick={onRemove} disabled={!canRemove}>
           外す

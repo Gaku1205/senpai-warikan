@@ -2,14 +2,14 @@
 import type { Member } from "./split";
 
 export const INITIAL_MEMBERS: Member[] = [
-  { id: "m1", name: "佐藤", level: 5, guest: false },
-  { id: "m2", name: "高橋", level: 4, guest: false },
-  { id: "m3", name: "鈴木", level: 4, guest: false },
-  { id: "m4", name: "伊藤", level: 3, guest: false },
-  { id: "m5", name: "渡辺", level: 3, guest: false },
-  { id: "m6", name: "山本", level: 3, guest: true },
-  { id: "m7", name: "中村", level: 2, guest: false },
-  { id: "m8", name: "小林", level: 1, guest: false },
+  { id: "m1", name: "佐藤", level: 5, guest: false, paid: false },
+  { id: "m2", name: "高橋", level: 4, guest: false, paid: false },
+  { id: "m3", name: "鈴木", level: 4, guest: false, paid: false },
+  { id: "m4", name: "伊藤", level: 3, guest: false, paid: false },
+  { id: "m5", name: "渡辺", level: 3, guest: false, paid: false },
+  { id: "m6", name: "山本", level: 3, guest: true, paid: false },
+  { id: "m7", name: "中村", level: 2, guest: false, paid: false },
+  { id: "m8", name: "小林", level: 1, guest: false, paid: false },
 ];
 
 export const INITIAL_EVENT = {
