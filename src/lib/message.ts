@@ -1,5 +1,6 @@
 // LINE に貼る文面を作る。
-import { type SplitResult, yen } from "./split";
+import { displayName } from "./headcount";
+import { LEVEL_NAMES, type Level, type SplitResult, yen } from "./split";
 
 export type MessageInput = {
   eventName: string;
@@ -33,14 +34,30 @@ export function buildLineMessage(
     lines.push(`合計 ${yen(input.total)}円（${result.rows.length}人）`);
   }
   lines.push("");
+  // 名前の入った人は1人1行。名前が空の人（主役以外）は、同じ立場・同じ金額でまとめて1行
+  const everyone = result.rows.map((r) => r.member);
+  const groups = new Map<string, { level: Level; count: number; amount: number; at: number }>();
+  const entries: string[] = [];
   for (const r of rows) {
-    const name = r.member.name.trim() || "名前なし";
-    if (r.member.guest) {
-      lines.push(`${name}さん　0円（今日の主役）`);
+    const m = r.member;
+    if (m.guest || m.name.trim() !== "") {
+      const name = displayName(m, everyone);
+      entries.push(m.guest ? `${name}さん　0円（今日の主役）` : `${name}さん　${yen(r.amount)}円`);
+      continue;
+    }
+    const key = `${m.level}:${r.amount}`;
+    const g = groups.get(key);
+    if (g) {
+      g.count += 1;
     } else {
-      lines.push(`${name}さん　${yen(r.amount)}円`);
+      groups.set(key, { level: m.level, count: 1, amount: r.amount, at: entries.length });
+      entries.push("");
     }
   }
+  for (const g of groups.values()) {
+    entries[g.at] = `${LEVEL_NAMES[g.level]} ${g.count}人 各 ${yen(g.amount)}円`;
+  }
+  lines.push(...entries);
   lines.push("");
   const organizer = input.organizerName.trim() || "幹事";
   const deadline = input.deadline.trim();
@@ -53,7 +70,7 @@ export function buildLineMessage(
     const holder = rows.find((r) => r.member.id === result.remainderHolderId);
     // まだの人だけの文面では、端数を持つ人がまだの人に入っているときだけ書く
     if (holder || !unpaid) {
-      const holderName = holder ? `${holder.member.name.trim() || "名前なし"}さん` : "";
+      const holderName = holder ? `${displayName(holder.member, everyone)}さん` : "";
       const sign = result.remainder > 0 ? "多め" : "少なめ";
       lines.push(`端数の${yen(Math.abs(result.remainder))}円は、${holderName}が${sign}に持っています。`);
     }

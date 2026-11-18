@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { loadWarikan, nextNewId, sameMembers, saveWarikan } from "@/lib/storage";
+import { loadWarikan, sameMembers, saveWarikan } from "@/lib/storage";
+import { LEVELS, MAX_MEMBERS, canAdjust, clearNames, countByLevel, displayName, newMemberId, placeholderName, setHeadcount } from "@/lib/headcount";
 import { Mark } from "./Mark";
 import { SlopeChart } from "./SlopeChart";
 import { MemberEditor } from "./MemberEditor";
@@ -17,6 +18,7 @@ import {
   type RemainderHolder,
   type RoundUnit,
   type Slope,
+  LEVEL_NAMES,
   SLOPE_NAMES,
   SLOPES,
   yen,
@@ -24,7 +26,6 @@ import {
 import { INITIAL_EVENT, INITIAL_MEMBERS } from "@/lib/sample";
 
 const UNITS: RoundUnit[] = [100, 500, 1000];
-const MAX_MEMBERS = 20;
 
 type Setting = "name" | "unit" | "remainder" | "due";
 
@@ -38,7 +39,6 @@ export function Warikan() {
   const [remainderTo, setRemainderTo] = useState<RemainderHolder>("organizer");
   const [deadline, setDeadline] = useState(INITIAL_EVENT.deadline);
   const [selectedId, setSelectedId] = useState(INITIAL_MEMBERS[0].id);
-  const [nextId, setNextId] = useState(1);
   const [editing, setEditing] = useState<Setting | null>(null);
   const [target, setTarget] = useState<MessageTarget>("all");
 
@@ -60,7 +60,6 @@ export function Warikan() {
       setRemainderTo(saved.remainderTo);
       setDeadline(saved.deadline);
       setSelectedId(saved.selectedId);
-      setNextId(nextNewId(saved.members));
     }
     setLoaded(true);
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -108,8 +107,7 @@ export function Warikan() {
 
   function addMember() {
     if (members.length >= MAX_MEMBERS) return;
-    const id = `new-${nextId}`;
-    setNextId((n) => n + 1);
+    const id = newMemberId(members);
     setMembers((ms) => [...ms, { id, name: "", level: 3, guest: false, paid: false }]);
     setSelectedId(id);
   }
@@ -120,6 +118,15 @@ export function Warikan() {
     setMembers(rest);
     setSelectedId(rest[0].id);
     if (organizerId === id) setOrganizerId(rest[0].id);
+  }
+
+  // 立場ごとの人数を変える。例の会のままなら、先に名前を全部空にして自分の会に切り替える
+  function changeHeadcount(level: Level, delta: 1 | -1) {
+    const base = isExample ? clearNames(members) : members;
+    const next = setHeadcount(base, level, countByLevel(base)[level] + delta);
+    setMembers(next);
+    if (!next.some((m) => m.id === selectedId)) setSelectedId(next[0].id);
+    if (!next.some((m) => m.id === organizerId)) setOrganizerId(next[0].id);
   }
 
   function applyPreset(p: { slope: Slope; guests: "newbies" | "keep" | "none" }) {
@@ -140,6 +147,8 @@ export function Warikan() {
     setEditing((cur) => (cur === k ? null : k));
   }
 
+  const counts = countByLevel(members);
+  const names = Object.fromEntries(members.map((m) => [m.id, displayName(m, members)]));
   const selected = members.find((m) => m.id === selectedId) ?? members[0];
 
   return (
@@ -172,6 +181,26 @@ export function Warikan() {
                 />
                 <span className="total-unit">円</span>
               </label>
+              <div className="heads" role="group" aria-label="立場ごとの人数">
+                <p className="heads-h">
+                  人数<span className="heads-sum">計 {members.length}人</span>
+                </p>
+                {LEVELS.map((lv) => {
+                  const { canMinus, canPlus } = canAdjust(members, lv);
+                  return (
+                    <div key={lv} className="heads-row">
+                      <span className="heads-name">{LEVEL_NAMES[lv]}</span>
+                      <button type="button" className="ed-btn" aria-label={`${LEVEL_NAMES[lv]}を1人減らす`} disabled={!canMinus} onClick={() => changeHeadcount(lv, -1)}>
+                        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
+                      </button>
+                      <span className={`heads-n${counts[lv] > 0 ? " is-on" : ""}`} aria-live="polite">{counts[lv]}</span>
+                      <button type="button" className="ed-btn" aria-label={`${LEVEL_NAMES[lv]}を1人増やす`} disabled={!canPlus} onClick={() => changeHeadcount(lv, 1)}>
+                        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M8 3v10" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             <fieldset className="slopes-field">
@@ -213,9 +242,10 @@ export function Warikan() {
           </div>
 
           <h2 className="sr">坂</h2>
-          <SlopeChart result={result} selectedId={selected.id} onSelect={setSelectedId} onSetLevel={setLevel} organizerId={organizerId} />
+          <SlopeChart result={result} names={names} selectedId={selected.id} onSelect={setSelectedId} onSetLevel={setLevel} organizerId={organizerId} />
           <MemberEditor
             member={selected}
+            placeholder={placeholderName(selected, members)}
             canRemove={members.length > 1}
             canAdd={members.length < MAX_MEMBERS}
             onChange={(patch) => updateMember(selected.id, patch)}
@@ -284,7 +314,7 @@ export function Warikan() {
                     <select className="input" value={organizerId} onChange={(e) => setOrganizerId(e.target.value)}>
                       {members.map((m) => (
                         <option key={m.id} value={m.id}>
-                          {m.name.trim() || "名前なし"}
+                          {names[m.id]}
                         </option>
                       ))}
                     </select>
