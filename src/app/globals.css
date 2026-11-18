@@ -793,6 +793,14 @@ select {
   color: var(--on-ink-muted);
   font-size: 16px;
 }
+/* 端数を持つ人の金額の後ろの「（端数調整）」 */
+.msg-adjust {
+  display: block;
+  color: var(--on-ink-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+}
 /* 柱の高さと同じ比の、金色の細い棒（坂の順に並んでいるのが見える） */
 .msg-bar {
   align-self: center;
@@ -924,8 +932,10 @@ select {
     margin: 0 -16px;
     border-radius: 0;
     padding: 20px 16px 16px;
-    /* 下に貼り付く「コピー」の帯の高さ分 */
-    padding-bottom: 92px;
+  }
+  /* 下に貼り付く「コピー」の帯の高さ分を、ページの最後に空ける */
+  .foot {
+    padding-bottom: calc(76px + env(safe-area-inset-bottom));
   }
   .hill-top {
     grid-template-columns: 1fr;
