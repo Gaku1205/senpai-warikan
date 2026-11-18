@@ -61,8 +61,8 @@ export function LineMessage({
   // 文面は「題と合計」「1人1行」「期限と端数」の3つの塊。1人1行の金額だけを金色の太字にする
   const [head = "", body = "", tail = ""] = text.split("\n\n");
   const rows = body.split("\n").filter(Boolean).map((line) => {
-    const g = line.match(/^(.+? \d+人) 各 ([\d,]+円)$/);
-    if (g) return { who: g[1], amount: g[2], note: "", value: Number(g[2].replace(/[^\d]/g, "")) };
+    const g = line.match(/^(.+? \d+人) 各 ([\d,]+円)(.*)$/);
+    if (g) return { who: g[1], amount: g[2], note: g[3], value: Number(g[2].replace(/[^\d]/g, "")) };
     const m = line.match(/^(.*?さん)\u3000([\d,]+円)(.*)$/);
     return m
       ? { who: m[1], amount: m[2], note: m[3], value: Number(m[2].replace(/[^\d]/g, "")) }
@@ -117,7 +117,10 @@ export function LineMessage({
             {rows.map((r, i) => (
               <li key={i} className="msg-row">
                 <span className="msg-who">{r.who}</span>
-                <span className="msg-amount">{r.amount}</span>
+                <span className="msg-amount">
+                  {r.amount}
+                  {r.value > 0 && r.note ? <small className="msg-adjust">{r.note}</small> : null}
+                </span>
                 {r.value > 0 ? (
                   <span className="msg-bar" aria-hidden="true" style={{ width: `${(r.value / maxValue) * 100}%` }} />
                 ) : (

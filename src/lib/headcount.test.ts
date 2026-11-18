@@ -91,9 +91,9 @@ describe("名前が空の人の文面", () => {
     // 文面の人数×各金額＋個別の金額の合計が、合計と一致する
     let sum = 0;
     for (const line of text.split("\n")) {
-      const g = /^.+ (\d+)人 各 ([\d,]+)円$/.exec(line);
+      const g = /^.+ (\d+)人 各 ([\d,]+)円(?:（端数調整）)?$/.exec(line);
       if (g) sum += Number(g[1]) * Number(g[2].replace(/,/g, ""));
-      const one = /^.+さん　([\d,]+)円$/.exec(line);
+      const one = /^.+さん　([\d,]+)円(?:（端数調整）)?$/.exec(line);
       if (one) sum += Number(one[1].replace(/,/g, ""));
     }
     expect(sum).toBe(total);
@@ -103,7 +103,7 @@ describe("名前が空の人の文面", () => {
     const ms = [m("a", 3), m("b", 3), m("c", 3)];
     const r = computeSplit({ total: 10000, members: ms, slope: "flat", unit: 100, organizerId: "a", remainderTo: "top" });
     const lines = buildLineMessage({ ...base, total: 10000 }, r).split("\n");
-    expect(lines).toContain("同期 1人 各 3,400円");
+    expect(lines).toContain("同期 1人 各 3,400円（端数調整）");
     expect(lines).toContain("同期 2人 各 3,300円");
   });
 
