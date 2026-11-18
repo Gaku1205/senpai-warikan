@@ -31,7 +31,7 @@ function parseMember(v: unknown): Member | null {
   if (typeof name !== "string") return null;
   if (typeof level !== "number" || !Number.isInteger(level) || level < 1 || level > 5) return null;
   if (typeof guest !== "boolean") return null;
-  return { id, name, level: level as Level, guest };
+  return { id, name, level: level as Level, guest, paid: false };
 }
 
 /** 保存用の値を検べて返す。形が違う・範囲外なら null（例外は投げない） */
@@ -73,7 +73,9 @@ export function parseSaved(value: unknown): SavedWarikan | null {
 /** 端末に残す。使えない・いっぱいのときは何もしない */
 export function saveWarikan(data: SavedWarikan): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // 集金済み（paid）は残さない
+    const members = data.members.map(({ id, name, level, guest }) => ({ id, name, level, guest }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, members }));
   } catch {
     // localStorage が使えない（プライベートモードなど）。残せないだけで、画面は動かす
   }

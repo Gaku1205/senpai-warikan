@@ -655,6 +655,18 @@ select {
   font-size: 15px;
   color: var(--on-ink-muted);
 }
+.msg-seg {
+  margin: 0 0 20px;
+  background: var(--ink-2);
+  border: 1px solid #3a3a37;
+}
+.msg-seg .seg-opt {
+  color: var(--on-ink-muted);
+}
+.msg-seg .seg-opt.is-on {
+  background: var(--gold);
+  color: var(--gold-ink);
+}
 .msg-actions {
   display: flex;
   flex-direction: column;

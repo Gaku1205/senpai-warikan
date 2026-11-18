@@ -9,7 +9,7 @@ import { MemberEditor } from "./MemberEditor";
 import { LineMessage } from "./LineMessage";
 import { Presets } from "./Presets";
 import { SlopeGlyph } from "./SlopeGlyph";
-import { buildLineMessage } from "@/lib/message";
+import { buildLineMessage, type MessageTarget } from "@/lib/message";
 import {
   computeSplit,
   type Level,
@@ -40,6 +40,7 @@ export function Warikan() {
   const [selectedId, setSelectedId] = useState(INITIAL_MEMBERS[0].id);
   const [nextId, setNextId] = useState(1);
   const [editing, setEditing] = useState<Setting | null>(null);
+  const [target, setTarget] = useState<MessageTarget>("all");
 
   const [loaded, setLoaded] = useState(false);
 
@@ -80,6 +81,7 @@ export function Warikan() {
   const message = buildLineMessage(
     { eventName, total, deadline, organizerName: organizer?.name ?? "" },
     result,
+    target,
   );
 
   const payingRows = result.rows.filter((r) => !r.member.guest);
@@ -108,7 +110,7 @@ export function Warikan() {
     if (members.length >= MAX_MEMBERS) return;
     const id = `new-${nextId}`;
     setNextId((n) => n + 1);
-    setMembers((ms) => [...ms, { id, name: "", level: 3, guest: false }]);
+    setMembers((ms) => [...ms, { id, name: "", level: 3, guest: false, paid: false }]);
     setSelectedId(id);
   }
 
@@ -297,7 +299,7 @@ export function Warikan() {
         </section>
       </main>
 
-      <LineMessage text={message} />
+      <LineMessage text={message} target={target} onTarget={setTarget} />
 
       <Presets current={slope} onApply={applyPreset} />
 

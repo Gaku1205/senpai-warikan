@@ -105,7 +105,7 @@ export function SlopeChart({
                 type="button"
                 className="step-btn"
                 aria-pressed={isSel}
-                aria-label={`${name}さん、${r.member.guest ? "主役" : LEVEL_NAMES[r.member.level]}、${yen(r.amount)}円${showEven && !r.member.guest ? `、均等より${signed(d)}円` : ""}。選んで編集`}
+                aria-label={`${name}さん、${r.member.guest ? "主役" : LEVEL_NAMES[r.member.level]}、${yen(r.amount)}円${!r.member.guest && r.member.paid ? "、集金済み" : ""}${showEven && !r.member.guest ? `、均等より${signed(d)}円` : ""}。選んで編集`}
                 onPointerDown={(e) => onPointerDown(e, r.member.id, r.member.level, r.member.guest)}
                 onPointerMove={onPointerMove}
                 onPointerUp={endGrab}
@@ -123,6 +123,7 @@ export function SlopeChart({
                   <span className="step-level">
                     {r.member.guest ? "主役" : LEVEL_NAMES[r.member.level]}
                     {r.member.id === organizerId && "・幹事"}
+                    {!r.member.guest && r.member.paid && "・済"}
                   </span>
                   {showEven && !r.member.guest && (
                     <span className={`step-diff${d > 0 ? " is-plus" : ""}`}>{signed(d)}</span>
